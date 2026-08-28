@@ -15,6 +15,11 @@ source:
 # 2. transform (처리 시간 삽입)
 transforms:
   add_ingest_time:
+    type: "remap"
+    inputs:
+      - "kafka_to_firehose_source"
+    source: |
+      .vector_ingest_at = now()
 
 # 3. sink (output-aws firehose)
 # sinks:
@@ -23,3 +28,8 @@ transforms:
 # 4. sink (output-debug)
 sinks:
   debug_console:
+    type: "console"
+    inputs: 
+      - "add_ingest_time"
+    encoding:
+      codec: "json"
