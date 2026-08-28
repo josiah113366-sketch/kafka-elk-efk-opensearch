@@ -29,6 +29,17 @@ variable "opensearch_index_name" {
   default     = "factory-sensor-001"
 }
 
+variable "firehose_buffer_size" {
+  description = "오픈 서치로 전송할 때 최대 버퍼 사이즈"
+  type        = number
+  default     = 1
+}
+variable "firehose_buffer_interval" {
+  description = "오픈 서치로 전송할 때 최대 버퍼 시간(s)"
+  type        = number
+  default     = 60
+}
+
 # firehose 이름, firehose -> opensearch : iam role name
 
 # vector -> firehose : iam role name
