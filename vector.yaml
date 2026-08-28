@@ -1,5 +1,5 @@
 # 1. source (input-local kafka)
-source:
+sources:
   kafka_to_firehose_source:
     type: "kafka"
     bootstrap_servers: "kafka:9092"
