@@ -23,6 +23,11 @@ variable "allowed_cidr" {
 }
 
 # opensearch, spec(버전, 인스턴스 유형, 볼륨 단위, 인덱스 등 설정)
+variable "opensearch_index_name" {
+  description = "firehose가 데이터를 opensearch에 적재할 때 세팅하는 인덱스 값"
+  type        = string
+  default     = "factory-sensor-001"
+}
 
 # firehose 이름, firehose -> opensearch : iam role name
 
