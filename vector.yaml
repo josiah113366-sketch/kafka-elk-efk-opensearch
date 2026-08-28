@@ -21,7 +21,7 @@ transforms:
     source: |
       .vector_ingest_at = now()
 
-3. sink (output-aws firehose)
+# 3. sink (output-aws firehose)
 sinks:
   firehose_sink:
     type: "aws_kinesis_firehose"
