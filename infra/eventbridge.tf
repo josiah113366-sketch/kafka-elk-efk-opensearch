@@ -17,7 +17,7 @@ resource "aws_iam_role" "eventbridge" {
 # 이벤트 브릿지 -> step function 작동을 위한 정책 조회
 data "aws_iam_policy_document" "eventbridge" {
   statement {
-    actions   = ["states:StartExecution"]
+    actions = ["states:StartExecution"]
     # step functions 리소스
     resources = [aws_sfn_state_machine.pipeline.arn]
   }
@@ -32,7 +32,7 @@ resource "aws_iam_role_policy" "eventbridge" {
 # 스케줄 관련 본 업무 
 # 특정 주기 단위로 이벤트 브릿지 규칙 생성
 resource "aws_cloudwatch_event_rule" "hourly" {
-  name = "${var.project_name}-hourly"
+  name        = "${var.project_name}-hourly"
   description = "10 minute, data pipeline run"
   # 스케줄 주기 표기 (매시간 10분)
   schedule_expression = var.eb_sch_expression
