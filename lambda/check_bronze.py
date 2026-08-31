@@ -1,524 +1,140 @@
-# Python 실행 인자(sys.argv)를 읽기 위해 sys 모듈을 가져온다.
-import sys
+# 운영체제 환경변수를 읽기 위해 os 모듈을 가져온다.
+import os
 
-# Glue Job 실행 시 전달받은 --KEY VALUE 형식의 파라미터를 읽기 위한 함수이다.
-from awsglue.utils import getResolvedOptions
+# UTC 기준 시간 계산과 직전 시간대 산출을 위해 datetime 관련 클래스를 가져온다.
+from datetime import datetime, timedelta, timezone
 
-# SparkSession을 생성하기 위해 SparkSession 클래스를 가져온다.
-from pyspark.sql import SparkSession
+# AWS S3 서비스에 접근하기 위해 boto3 SDK를 가져온다.
+import boto3
 
-# PySpark의 컬럼 연산, 형변환, 조건식, 집계 등에 사용하는 functions를 F라는 이름으로 가져온다.
-from pyspark.sql import functions as F
+# Lambda 실행 환경에서 재사용할 S3 클라이언트를 생성한다.
+s3 = boto3.client("s3")
 
+# Terraform이 Lambda 환경변수로 전달한 Data Lake S3 버킷 이름을 읽는다.
+BUCKET_NAME = os.environ["BUCKET_NAME"]
+# Athena/Glue Data Catalog에 등록된 Silver 테이블 이름을 읽는다.
+SILVER_TABLE = os.environ["SILVER_TABLE"]
+# Athena/Glue Data Catalog에 등록된 Gold 테이블 이름을 읽는다.
+GOLD_TABLE = os.environ["GOLD_TABLE"]
+KST = timezone(timedelta(hours=9))
 
-# Step Functions → Glue Job 실행 시 전달되는 실행 파라미터를 읽는다.
-ARGS = getResolvedOptions(
-    # 현재 Python 프로그램에 전달된 전체 실행 인자를 사용한다.
-    sys.argv,
+# 처리할 기준 시간대를 결정하는 내부 함수다.
+def _target_hour(event: dict) -> datetime:
+    # 수동 실행 시 event에 target_datetime이 있으면 해당 시간을 처리 대상으로 사용한다.
+    value = event.get("target_datetime")
+    # target_datetime 값이 전달된 경우 수동 실행용 시간 계산을 수행한다.
+    if value:
+        # 문자열 끝의 Z를 Python이 해석할 수 있는 UTC 오프셋(+00:00) 형태로 바꾼다.
+        value = value.replace("Z", "+00:00")
+        # ISO 8601 문자열을 datetime 객체로 변환한다.
+        dt = datetime.fromisoformat(value)
+        # 전달된 시간에 timezone 정보가 없으면 UTC 시간으로 간주한다.
+        if dt.tzinfo is None:
+            # timezone 정보가 없는 datetime에 UTC timezone을 설정한다.
+            dt = dt.replace(tzinfo=timezone.utc)
+        # UTC 기준으로 변환한 뒤 분/초/마이크로초를 0으로 만들어 해당 시간의 정각으로 맞춘다.
+        return dt.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
-    # Glue Job에서 반드시 전달받아야 할 파라미터 이름 목록이다.
-    [
-        # 현재 실행 중인 Glue Job 이름이다.
-        "JOB_NAME",
+    # EventBridge 자동 실행 시 현재 UTC 시간을 구한다.
+    now = datetime.now(timezone.utc)
+    # Firehose Flush 시간을 고려해 현재 시간이 아닌 직전 1시간을 처리 대상으로 사용한다.
+    return now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
 
-        # Bronze 데이터를 읽을 S3 경로이다.
-        "SOURCE_PATH",
+# Step Functions가 호출하는 Lambda의 시작 함수다.
+def lambda_handler(event, context):
+    # 입력 event를 기준으로 실제 처리할 시간대를 계산한다.
+    target = _target_hour(event or {})
+    # S3 Bronze/Silver/Gold 파티션은 한국시간 기준이므로 KST로 변환한다.
+    partition_time = target.astimezone(KST)
+    # 처리 대상 시간에서 연도 값을 YYYY 형식으로 추출한다.
+    year = partition_time.strftime("%Y")
+    # 처리 대상 시간에서 월 값을 MM 형식으로 추출한다.
+    month = partition_time.strftime("%m")
+    # 처리 대상 시간에서 일 값을 DD 형식으로 추출한다.
+    day = partition_time.strftime("%d")
+    # 처리 대상 시간에서 시 값을 HH 형식으로 추출한다.
+    hour = partition_time.strftime("%H")
 
-        # Silver 데이터를 저장할 S3 기본 경로이다.
-        "SILVER_BASE_PATH",
+    # 해당 시간대의 Bronze 데이터가 저장되는 S3 Prefix를 만든다.
+    bronze_prefix = f"bronze/year={year}/month={month}/day={day}/hour={hour}/"
+    # 해당 시간대의 Silver 데이터가 저장되는 S3 Prefix를 만든다.
+    silver_prefix = f"silver/year={year}/month={month}/day={day}/hour={hour}/"
+    # 정제 과정에서 Reject된 데이터가 저장되는 S3 Prefix를 만든다.
+    reject_prefix = f"reject/year={year}/month={month}/day={day}/hour={hour}/"
+    # 해당 시간대의 Gold 집계 데이터가 저장되는 S3 Prefix를 만든다.
+    gold_prefix = f"gold/sensor_hourly/year={year}/month={month}/day={day}/hour={hour}/"
 
-        # Reject 데이터를 저장할 S3 기본 경로이다.
-        "REJECT_BASE_PATH",
+    # Bronze Prefix 아래에 객체가 한 개라도 있는지 확인하기 위해 최대 1개만 조회한다.
+    response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=bronze_prefix, MaxKeys=1)
+    # KeyCount가 1 이상이면 해당 시간대에 처리할 Bronze 데이터가 있다고 판단한다.
+    data_exists = response.get("KeyCount", 0) > 0
 
-        # 처리 대상 데이터의 연도이다.
-        "TARGET_YEAR",
+    # Gold 파티션이 실제 저장될 전체 S3 URI를 만든다.
+    gold_location = f"s3://{BUCKET_NAME}/{gold_prefix}"
 
-        # 처리 대상 데이터의 월이다.
-        "TARGET_MONTH",
-
-        # 처리 대상 데이터의 일이다.
-        "TARGET_DAY",
-
-        # 처리 대상 데이터의 시간이다.
-        "TARGET_HOUR",
-
-        # Silver 결과 파일을 몇 개의 파티션으로 출력할지 결정한다.
-        "OUTPUT_PARTITIONS",
-    ],
-)
-
-
-# Glue Job 이름을 Spark Application 이름으로 사용하여 SparkSession을 생성한다.
-spark = SparkSession.builder.appName(ARGS["JOB_NAME"]).getOrCreate()
-
-
-# Bronze 원본 데이터를 읽을 S3 경로를 변수에 저장한다.
-source_path = ARGS["SOURCE_PATH"]
-
-# 처리 대상 연도를 가져온다.
-year = ARGS["TARGET_YEAR"]
-
-# 처리 대상 월을 가져온다.
-month = ARGS["TARGET_MONTH"]
-
-# 처리 대상 일을 가져온다.
-day = ARGS["TARGET_DAY"]
-
-# 처리 대상 시간을 가져온다.
-hour = ARGS["TARGET_HOUR"]
-
-# 출력 Parquet 파일 개수를 정수로 변환하며 최소 1개 이상이 되도록 설정한다.
-output_partitions = max(int(ARGS["OUTPUT_PARTITIONS"]), 1)
-
-
-# 현재 처리 시간에 해당하는 Silver 저장 경로를 만든다.
-# 예: s3://bucket/silver/year=2026/month=08/day=31/hour=04/
-silver_path = (
-    f'{ARGS["SILVER_BASE_PATH"]}'
-    f'year={year}/month={month}/day={day}/hour={hour}/'
-)
-
-# 현재 처리 시간에 해당하는 Reject 저장 경로를 만든다.
-# 예: s3://bucket/reject/year=2026/month=08/day=31/hour=04/
-reject_path = (
-    f'{ARGS["REJECT_BASE_PATH"]}'
-    f'year={year}/month={month}/day={day}/hour={hour}/'
-)
-
-
-# ---------------------------------------------------------
-# 1. Bronze 데이터 읽기
-# ---------------------------------------------------------
-
-# Firehose가 S3에 저장한 JSONL GZIP 파일을 읽는다.
-# Spark는 .gz 압축을 자동으로 해제하고 JSON 레코드를 DataFrame으로 변환한다.
-raw = spark.read.json(source_path)
-
-
-# ---------------------------------------------------------
-# 2. 입력 스키마 보완
-# ---------------------------------------------------------
-
-# 기존 Kafka 프로젝트에서는 JSON Topic과 TEXT Topic의 필드명이 서로 다를 수 있다.
-#
-# 예:
-#
-# JSON Topic
-#   timestamp
-#   sensor_id
-#   temperature
-#   humidity
-#
-# TEXT Topic
-#   log_time
-#   device_id
-#   temp
-#   humi
-#
-# 특정 시간대에 한 Topic의 데이터만 존재하더라도
-# 뒤의 정규화 코드가 실패하지 않도록 필요한 컬럼 목록을 정의한다.
-optional_columns = [
-    "timestamp",
-    "log_time",
-    "sensor_id",
-    "device_id",
-    "temperature",
-    "temp",
-    "humidity",
-    "humi",
-    "status",
-    "topic",
-    "partition",
-    "offset",
-    "vector_ingest_at",
-]
-
-
-# 필요한 컬럼을 하나씩 확인한다.
-for column_name in optional_columns:
-
-    # 현재 Bronze DataFrame에 해당 컬럼이 존재하지 않는 경우 처리한다.
-    if column_name not in raw.columns:
-
-        # 없는 컬럼을 NULL 값으로 새로 추가한다.
-        # 이를 통해 이후 F.col() 호출에서 컬럼 없음 오류가 발생하지 않도록 한다.
-        raw = raw.withColumn(
-            column_name,
-            F.lit(None),
-        )
-
-
-# ---------------------------------------------------------
-# 3. Bronze → 공통 스키마 정규화
-# ---------------------------------------------------------
-
-# 서로 다른 두 Kafka Topic의 컬럼 구조를 하나의 공통 구조로 맞춘다.
-normalized = (
-    raw
-
-    # timestamp가 있으면 사용하고, 없으면 log_time을 사용한다.
-    # 최종적으로 occurred_at_raw이라는 공통 컬럼을 만든다.
-    .withColumn(
-        "occurred_at_raw",
-        F.coalesce(
-            F.col("timestamp"),
-            F.col("log_time"),
-        ),
+    # Athena Gold 테이블에 해당 시간 파티션을 추가하기 위한 SQL을 생성한다.
+    gold_partition_query = (
+        # 기존 파티션이 이미 있더라도 오류가 나지 않도록 IF NOT EXISTS를 사용한다.
+        f"ALTER TABLE {GOLD_TABLE} ADD IF NOT EXISTS "
+        # year/month/day/hour 값을 Gold 테이블의 파티션 값으로 지정한다.
+        f"PARTITION (year='{year}', month='{month}', day='{day}', hour='{hour}') "
+        # 위 파티션이 실제로 바라볼 S3 경로를 지정한다.
+        f"LOCATION '{gold_location}'"
     )
 
-    # sensor_id가 있으면 사용하고, 없으면 device_id를 사용한다.
-    .withColumn(
-        "sensor_id_raw",
-        F.coalesce(
-            F.col("sensor_id"),
-            F.col("device_id"),
-        ),
-    )
-
-    # temperature가 있으면 사용하고, 없으면 temp를 사용한다.
-    .withColumn(
-        "temperature_raw",
-        F.coalesce(
-            F.col("temperature"),
-            F.col("temp"),
-        ),
-    )
-
-    # humidity가 있으면 사용하고, 없으면 humi를 사용한다.
-    .withColumn(
-        "humidity_raw",
-        F.coalesce(
-            F.col("humidity"),
-            F.col("humi"),
-        ),
-    )
-
-    # 문자열 형태의 이벤트 발생 시간을 Spark Timestamp 타입으로 변환한다.
-    .withColumn(
-        "occurred_at_ts",
-        F.to_timestamp("occurred_at_raw"),
-    )
-
-    # Vector에서 추가한 수집 시간을 Timestamp 타입으로 변환한다.
-    .withColumn(
-        "vector_ingest_at_ts",
-        F.to_timestamp("vector_ingest_at"),
-    )
-
-    # 온도 값을 숫자 계산이 가능한 double 타입으로 변환한다.
-    .withColumn(
-        "temperature_num",
-        F.col("temperature_raw").cast("double"),
-    )
-
-    # 습도 값을 double 타입으로 변환한다.
-    .withColumn(
-        "humidity_num",
-        F.col("humidity_raw").cast("double"),
-    )
-
-    # Kafka Partition 값을 정수형으로 변환한다.
-    .withColumn(
-        "kafka_partition_num",
-        F.col("partition").cast("int"),
-    )
-
-    # Kafka Offset 값을 long 타입으로 변환한다.
-    .withColumn(
-        "kafka_offset_num",
-        F.col("offset").cast("long"),
-    )
-
-    # Kafka Topic + Partition + Offset을 이용하여
-    # 각 Kafka 레코드를 식별할 event_id를 생성한다.
-    .withColumn(
-        "event_id",
-
-        # 조합된 문자열을 SHA-256 Hash 값으로 변환한다.
-        F.sha2(
-
-            # 여러 값을 | 문자로 연결한다.
-            F.concat_ws(
-                "|",
-
-                # Topic이 NULL이면 unknown-topic을 대신 사용한다.
-                F.coalesce(
-                    F.col("topic").cast("string"),
-                    F.lit("unknown-topic"),
-                ),
-
-                # Partition이 NULL이면 -1을 사용한다.
-                F.coalesce(
-                    F.col("partition").cast("string"),
-                    F.lit("-1"),
-                ),
-
-                # Offset이 NULL이면 -1을 사용한다.
-                F.coalesce(
-                    F.col("offset").cast("string"),
-                    F.lit("-1"),
-                ),
-            ),
-
-            # SHA-256 알고리즘을 사용한다.
-            256,
-        ),
-    )
-)
-
-
-# ---------------------------------------------------------
-# 4. 정상 / Reject 데이터 판단 조건
-# ---------------------------------------------------------
-
-# 센서 값 자체가 높거나 낮은 것은 분석 대상 데이터로 인정한다.
-#
-# 예:
-# temperature = 120
-# humidity = 90
-#
-# 이런 값은 Reject하지 않고 Silver에 저장한다.
-#
-# 대신 구조적으로 사용할 수 없는 레코드만 Reject 대상으로 판단한다.
-valid_condition = (
-
-    # 이벤트 시간이 정상적인 Timestamp로 변환되었는지 확인한다.
-    F.col("occurred_at_ts").isNotNull()
-
-    # 센서 ID가 존재하는지 확인한다.
-    & F.col("sensor_id_raw").isNotNull()
-
-    # 온도를 숫자로 변환할 수 있었는지 확인한다.
-    & F.col("temperature_num").isNotNull()
-
-    # 습도를 숫자로 변환할 수 있었는지 확인한다.
-    & F.col("humidity_num").isNotNull()
-
-    # 센서 상태 값이 존재하는지 확인한다.
-    & F.col("status").isNotNull()
-
-    # Kafka Topic 정보가 존재하는지 확인한다.
-    & F.col("topic").isNotNull()
-
-    # Kafka Partition 정보가 존재하는지 확인한다.
-    & F.col("kafka_partition_num").isNotNull()
-
-    # Kafka Offset 정보가 존재하는지 확인한다.
-    & F.col("kafka_offset_num").isNotNull()
-)
-
-
-# valid_condition의 결과가 NULL이 되는 경우도 False로 처리한다.
-# 최종 결과는 True 또는 False만 가지도록 만든다.
-is_valid = F.coalesce(
-    valid_condition,
-    F.lit(False),
-)
-
-
-# ---------------------------------------------------------
-# 5. 정상 데이터 → Silver
-# ---------------------------------------------------------
-
-# 정상으로 판단된 데이터만 Silver 형태로 정제한다.
-valid = (
-
-    # 앞에서 정규화한 DataFrame을 사용한다.
-    normalized
-
-    # is_valid=True인 레코드만 선택한다.
-    .filter(is_valid)
-
-    # 분석에 필요한 컬럼만 선택하고 이름과 타입을 정리한다.
-    .select(
-
-        # Kafka Topic/Partition/Offset으로 만든 고유 이벤트 ID이다.
-        F.col("event_id")
-        .cast("string")
-        .alias("event_id"),
-
-        # 원 로그가 실제 발생한 시간이다.
-        F.col("occurred_at_ts")
-        .alias("occurred_at"),
-
-        # JSON/TEXT Topic의 센서 ID 필드를 하나의 sensor_id로 통합한다.
-        F.col("sensor_id_raw")
-        .cast("string")
-        .alias("sensor_id"),
-
-        # 숫자형으로 정규화된 온도 값이다.
-        F.col("temperature_num")
-        .alias("temperature"),
-
-        # 숫자형으로 정규화된 습도 값이다.
-        F.col("humidity_num")
-        .alias("humidity"),
-
-        # 원본 로그의 상태 값을 문자열로 저장한다.
-        F.col("status")
-        .cast("string")
-        .alias("status"),
-
-        # 어떤 Kafka Topic에서 들어온 데이터인지 기록한다.
-        F.col("topic")
-        .cast("string")
-        .alias("source_topic"),
-
-        # 해당 메시지가 속한 Kafka Partition 번호를 저장한다.
-        F.col("kafka_partition_num")
-        .alias("kafka_partition"),
-
-        # Kafka 메시지의 Offset 값을 저장한다.
-        F.col("kafka_offset_num")
-        .alias("kafka_offset"),
-
-        # Vector가 해당 로그를 소비한 시간을 저장한다.
-        F.col("vector_ingest_at_ts")
-        .alias("vector_ingest_at"),
-
-        # 온도가 100 이상이면 True, 그렇지 않으면 False로 판단한다.
-        # 원 로그에는 존재하지 않고 Silver 단계에서 새로 만드는 파생 컬럼이다.
-        (
-            F.col("temperature_num") >= F.lit(100.0)
-        ).alias("temperature_alert"),
-
-        # 습도가 70 이상이면 True, 그렇지 않으면 False로 판단한다.
-        # 역시 Silver 단계에서 새로 만드는 파생 컬럼이다.
-        (
-            F.col("humidity_num") >= F.lit(70.0)
-        ).alias("humidity_alert"),
-
-        # 현재 Glue에서 데이터를 처리한 시간을 추가한다.
-        F.current_timestamp()
-        .alias("processed_at"),
-    )
-
-    # 같은 event_id를 가진 중복 Kafka 메시지가 존재하면 하나만 남긴다.
-    .dropDuplicates(["event_id"])
-)
-
-
-# ---------------------------------------------------------
-# 6. 비정상 데이터 → Reject
-# ---------------------------------------------------------
-
-# 정상 조건을 만족하지 못한 데이터만 추출한다.
-reject = (
-
-    # 정규화된 데이터를 기준으로 처리한다.
-    normalized
-
-    # is_valid=False인 레코드만 선택한다.
-    .filter(~is_valid)
-
-    # 어떤 이유로 Reject 되었는지 reject_reason 컬럼을 추가한다.
-    .withColumn(
-        "reject_reason",
-
-        # 여러 Reject 이유가 발생하면 쉼표(,)로 연결한다.
-        F.concat_ws(
-            ",",
-
-            # Timestamp 변환이 실패했다면 invalid_timestamp를 기록한다.
-            F.when(
-                F.col("occurred_at_ts").isNull(),
-                F.lit("invalid_timestamp"),
-            ),
-
-            # 센서 ID가 없으면 missing_sensor_id를 기록한다.
-            F.when(
-                F.col("sensor_id_raw").isNull(),
-                F.lit("missing_sensor_id"),
-            ),
-
-            # 온도를 숫자로 변환할 수 없으면 invalid_temperature를 기록한다.
-            F.when(
-                F.col("temperature_num").isNull(),
-                F.lit("invalid_temperature"),
-            ),
-
-            # 습도를 숫자로 변환할 수 없으면 invalid_humidity를 기록한다.
-            F.when(
-                F.col("humidity_num").isNull(),
-                F.lit("invalid_humidity"),
-            ),
-
-            # status가 없으면 missing_status를 기록한다.
-            F.when(
-                F.col("status").isNull(),
-                F.lit("missing_status"),
-            ),
-
-            # Kafka Topic이 없으면 missing_topic을 기록한다.
-            F.when(
-                F.col("topic").isNull(),
-                F.lit("missing_topic"),
-            ),
-
-            # Kafka Partition 정보가 없으면 missing_partition을 기록한다.
-            F.when(
-                F.col("kafka_partition_num").isNull(),
-                F.lit("missing_partition"),
-            ),
-
-            # Kafka Offset 정보가 없으면 missing_offset을 기록한다.
-            F.when(
-                F.col("kafka_offset_num").isNull(),
-                F.lit("missing_offset"),
-            ),
-        ),
-    )
-
-    # Reject된 시간을 추가한다.
-    .withColumn(
-        "rejected_at",
-        F.current_timestamp(),
-    )
-)
-
-
-# ---------------------------------------------------------
-# 7. Silver 데이터 저장
-# ---------------------------------------------------------
-
-# Silver DataFrame의 파티션 수를 지정된 수만큼 줄인다.
-# 작은 파일이 너무 많이 만들어지는 Small File 문제를 줄이기 위한 설정이다.
-valid.coalesce(output_partitions) \
-    .write \
-    .mode("overwrite") \
-    .parquet(silver_path)
-
-
-# ---------------------------------------------------------
-# 8. Reject 데이터 저장
-# ---------------------------------------------------------
-
-# Reject 데이터는 파일 수를 1개로 줄여 JSON 형식으로 저장한다.
-reject.coalesce(1) \
-    .write \
-    .mode("overwrite") \
-    .json(reject_path)
-
-
-# ---------------------------------------------------------
-# 9. Glue Job 실행 결과 로그 출력
-# ---------------------------------------------------------
-
-# 이번 Glue Job이 읽은 Bronze S3 경로를 CloudWatch 로그에 출력한다.
-print(f"SOURCE_PATH={source_path}")
-
-# Silver 데이터가 저장된 S3 경로를 출력한다.
-print(f"SILVER_PATH={silver_path}")
-
-# Reject 데이터가 저장된 S3 경로를 출력한다.
-print(f"REJECT_PATH={reject_path}")
-
-# 정상 처리되어 Silver로 들어간 데이터 개수를 출력한다.
-print(f"VALID_COUNT={valid.count()}")
-
-# Reject 영역으로 분리된 데이터 개수를 출력한다.
-print(f"REJECT_COUNT={reject.count()}")
-
-
-# SparkSession을 종료하고 Glue Job의 Spark 리소스를 정리한다.
-spark.stop()
+    # Silver 데이터를 센서별 시간 단위 Gold 통계로 집계하는 Athena INSERT SQL을 생성한다.
+    gold_insert_query = f"""
+INSERT INTO {GOLD_TABLE}
+SELECT
+    sensor_id,
+    COUNT(*) AS event_count,
+    AVG(temperature) AS avg_temperature,
+    AVG(humidity) AS avg_humidity,
+    MAX(temperature) AS max_temperature,
+    MAX(humidity) AS max_humidity,
+    SUM(CASE WHEN temperature_alert THEN 1 ELSE 0 END) AS high_temperature_count,
+    SUM(CASE WHEN humidity_alert THEN 1 ELSE 0 END) AS high_humidity_count,
+    '{year}' AS year,
+    '{month}' AS month,
+    '{day}' AS day,
+    '{hour}' AS hour
+FROM {SILVER_TABLE}
+WHERE year='{year}' AND month='{month}' AND day='{day}' AND hour='{hour}'
+GROUP BY sensor_id
+""".strip()
+
+    # Step Functions의 다음 단계들이 사용할 처리 정보와 SQL을 반환한다.
+    return {
+        # Bronze 데이터 존재 여부를 반환해 Choice 단계에서 작업 계속 여부를 판단하게 한다.
+        "data_exists": data_exists,
+        # 실제 처리한 기준 시간을 UTC ISO 8601 문자열로 반환한다.
+        "target_datetime": target.isoformat().replace("+00:00", "Z"),
+        # 처리 대상 연도를 반환한다.
+        "year": year,
+        # 처리 대상 월을 반환한다.
+        "month": month,
+        # 처리 대상 일을 반환한다.
+        "day": day,
+        # 처리 대상 시간을 반환한다.
+        "hour": hour,
+        # Glue가 읽을 Bronze Prefix를 반환한다.
+        "bronze_prefix": bronze_prefix,
+        # Glue 입력 데이터의 전체 S3 경로를 반환한다.
+        "source_path": f"s3://{BUCKET_NAME}/{bronze_prefix}",
+        # Glue가 Silver를 저장할 기본 S3 경로를 반환한다.
+        "silver_base_path": f"s3://{BUCKET_NAME}/silver/",
+        # 현재 시간대 Silver 데이터의 S3 경로를 반환한다.
+        "silver_path": f"s3://{BUCKET_NAME}/{silver_prefix}",
+        # Reject 데이터가 저장될 기본 S3 경로를 반환한다.
+        "reject_base_path": f"s3://{BUCKET_NAME}/reject/",
+        # 현재 시간대 Reject 데이터의 S3 경로를 반환한다.
+        "reject_path": f"s3://{BUCKET_NAME}/{reject_prefix}",
+        # Gold 데이터 삭제 및 검증 단계에서 사용할 Gold Prefix를 반환한다.
+        "gold_prefix": gold_prefix,
+        # Athena Gold 파티션이 바라볼 S3 경로를 반환한다.
+        "gold_location": gold_location,
+        # Step Functions가 Athena에서 실행할 Gold 파티션 등록 SQL을 반환한다.
+        "gold_partition_query": gold_partition_query,
+        # Step Functions가 Athena에서 실행할 Silver → Gold 집계 SQL을 반환한다.
+        "gold_insert_query": gold_insert_query,
+    }
