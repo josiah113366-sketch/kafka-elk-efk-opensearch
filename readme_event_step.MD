@@ -1,20 +1,4 @@
 # 데이터 목표
-- 메달리온 아키텍쳐 기본
-- 브론즈 : 원본 데이터 
-```
-{
-  "timestamp": "2026-08-31T13:25:14+09:00",
-  "sensor_id": "SENSOR-003",
-  "temperature": 87.5,
-  "humidity": 42.1,
-  "status": "WARN"
-}
-```
-- 실버 : 정제된 데이터
-```
-{
-  "timestamp": "2026-08-31T13:25:14+09:00",
-  "sensor_id": "SENSOR-003",# 데이터 목표
 - 메달리온 아킥텍쳐 기본
 - 브론즈 : 원본 데이터 
 ```
@@ -26,7 +10,7 @@
   "status": "WARN"
 }
 ```
-- 실버 : 정제된 데이터 -> 분석 가능한 깨끗한 데이터, 필요 시 파생 변수 추가 가능
+- 실버 : 정제된 데이터 -> 분석 가능한 깨끗한 데이터, 필요시 파생변수 추가 가능
 ```
 {
   # 원데이터
@@ -35,8 +19,11 @@
   "temperature": 87.5,
   "humidity": 42.1,
   "status": "WARN",
-
-  # 파생 변수 -> 온도, 습도 등 이상 상황에 대한 파생 변수 추가
+ 
+  # 파생 변수 -> 온도, 습도등 이상 상황에 대한 파생변수 추가
+  "is_abnormal_temperature": true,
+  "is_abnormal_humidity": false,
+  "is_abnormal": true,
 
   # 파티션 데이터
   "year": 2026,
@@ -53,25 +40,34 @@ silver/
             └── hour=13/
                 └── part-xxxx.parquet
 ```
-- 골드
-  "temperature": 87.5,
-  "humidity": 42.1,
-  "status": "WARN",
+- 골드 - 집계된 데이터(비즈니스에 부합한 데이터 형태)
+```
+# 시간단 집계 한다면 -> 해당 센서에 대해서 인사이트 도출, 설명, 이해 등 할수 있게 제공
+# 데이터 요구자 DS라면 요청에 맞게 구성...
+{
+  "sensor_id": "SENSOR-003",
+  
   "year": 2026,
   "month": 8,
   "day": 31,
-  "hour": 13
+  "hour": 13,
+
+  "total_count": 3600,
+  "normal_count": 3420,
+  "warn_count": 150,
+  "error_count": 30,
+
+  "avg_temperature": 72.4,
+
+  "max_temperature": 91.2,
+
+  "avg_humidity": 43.8
+  ...
 }
+
 ```
-```
-silver/
-└── year=2026/
-    └── month=08/
-        └── day=31/
-            └── hour=13/
-                └── part-xxxx.parquet
-```
-- 골드
+
+- 위의 silver, gold 데이터 형태에 맞춰서 스키마 구성 필요 -> Glue Data Catalog -> db/테이블 구성 -> parquet 저장 -> 열 기반 검색/쿼리 -> 속도 이득
 
 # 인프라 목표
 - 기존 로그젠 -> fluent-bit -> kafka -> vector -> firehose 동일 
