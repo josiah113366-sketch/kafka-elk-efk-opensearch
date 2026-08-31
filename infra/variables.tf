@@ -66,5 +66,13 @@ variable "notification_email" {
   description = "선택, SNS 이메일 구독 주소"
   type        = number
   default     = null
-  nullable = true
+  nullable    = true
+}
+
+# glue_output_partitions
+# 브론즈에 파일이 1000개 (gzip) -> 실버에서는 1개의 parquet로 구성하겠다는 설정
+variable "glue_output_partitions" {
+  description = "시간 파티션당 silver parquet 파일 수"
+  type        = number
+  default     = 1
 }

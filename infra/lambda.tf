@@ -31,7 +31,7 @@ resource "aws_lambda_function" "check_bronze" {
   # 소스
   filename = data.archive_file.check_bronze.output_path # zip 파일
   # 소스 업데이트
-  source_code_hash =  data.archive_file.check_bronze.output_base64sha256 # 해시값이 바뀌면 업데이트로 간주
+  source_code_hash = data.archive_file.check_bronze.output_base64sha256 # 해시값이 바뀌면 업데이트로 간주
   # 작업 최대 시간 - 설정
   timeout = 30
   # 람다 사용할 최대 메모리 - 설정
@@ -39,9 +39,9 @@ resource "aws_lambda_function" "check_bronze" {
   # 환경 변수 - s3 버킷 경로, parquet 저장 시 사용할 실버/골드 스키마
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.data_lake.id
+      BUCKET_NAME  = aws_s3_bucket.data_lake.id
       SILVER_TABLE = aws_glue_catalog_table.silver.name
-      GOLD_TABLE = aws_glue_catalog_table.gold.name
+      GOLD_TABLE   = aws_glue_catalog_table.gold.name
     }
   }
 }
@@ -57,7 +57,7 @@ resource "aws_lambda_function" "cleanup_gold" {
   # 소스
   filename = data.archive_file.cleanup_gold.output_path # zip 파일
   # 소스 업데이트
-  source_code_hash =  data.archive_file.cleanup_gold.output_base64sha256 # 해시값이 바뀌면 업데이트로 간주
+  source_code_hash = data.archive_file.cleanup_gold.output_base64sha256 # 해시값이 바뀌면 업데이트로 간주
   # 작업 최대 시간 - 설정
   timeout = 60
   # 람다 사용할 최대 메모리 - 설정
@@ -81,7 +81,7 @@ resource "aws_lambda_function" "quality_check" {
   # 소스
   filename = data.archive_file.quality_check.output_path # zip 파일
   # 소스 업데이트
-  source_code_hash =  data.archive_file.quality_check.output_base64sha256 # 해시값이 바뀌면 업데이트로 간주
+  source_code_hash = data.archive_file.quality_check.output_base64sha256 # 해시값이 바뀌면 업데이트로 간주
   # 작업 최대 시간 - 설정
   timeout = 30
   # 람다 사용할 최대 메모리 - 설정
