@@ -368,7 +368,7 @@ EventBridge
   - ~/lambda/quality_check.py
 
 # Glue work 유형
-- G.1X 스펙 
+- G.1X 스펙 ( https://docs.aws.amazon.com/glue/latest/dg/add-job.html?utm_source=chatgpt.com )
 
 | 항목     |        G.1X |
 | ------ | ----------: |
