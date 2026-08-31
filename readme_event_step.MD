@@ -154,8 +154,11 @@ Step Functions
   - opensearch.tf 삭제
   - variables.tf에서 opensearch 관련 변수 삭제
   - firehose.tf에서 opensearch 구성 삭제
-- outputs.tf에서 opensearch 출력 삭제
+  - outputs.tf에서 opensearch 출력 삭제
+
 - 1. 변수명 조정 -> 금요일 인프라 구분
+  - 프로젝트명, firehose 크기/시간 
+
 - 2. firehose에서 s3로 적재되게 조정 -> Data Lake 구성 완료
 ```
 eventbridge.tf
