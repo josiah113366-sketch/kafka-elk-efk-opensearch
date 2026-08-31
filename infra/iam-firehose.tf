@@ -30,7 +30,7 @@ resource "aws_iam_role_policy" "firehose" {
         Effect = "Allow"
         Action = [
           "s3:AbortMultipartUpload",
-          "s3:PutObject", 
+          "s3:PutObject",
           "s3:GetBucketLocation",
           "s3:GetObject",
           "s3:ListBucket",
