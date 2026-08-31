@@ -14,7 +14,46 @@
 ```
 {
   "timestamp": "2026-08-31T13:25:14+09:00",
+  "sensor_id": "SENSOR-003",# 데이터 목표
+- 메달리온 아킥텍쳐 기본
+- 브론즈 : 원본 데이터 
+```
+{
+  "timestamp": "2026-08-31T13:25:14+09:00",
   "sensor_id": "SENSOR-003",
+  "temperature": 87.5,
+  "humidity": 42.1,
+  "status": "WARN"
+}
+```
+- 실버 : 정제된 데이터 -> 분석 가능한 깨끗한 데이터, 필요 시 파생 변수 추가 가능
+```
+{
+  # 원데이터
+  "timestamp": "2026-08-31T13:25:14+09:00",
+  "sensor_id": "SENSOR-003",
+  "temperature": 87.5,
+  "humidity": 42.1,
+  "status": "WARN",
+
+  # 파생 변수 -> 온도, 습도 등 이상 상황에 대한 파생 변수 추가
+
+  # 파티션 데이터
+  "year": 2026,
+  "month": 8,
+  "day": 31,
+  "hour": 13
+}
+```
+```
+silver/
+└── year=2026/
+    └── month=08/
+        └── day=31/
+            └── hour=13/
+                └── part-xxxx.parquet
+```
+- 골드
   "temperature": 87.5,
   "humidity": 42.1,
   "status": "WARN",
