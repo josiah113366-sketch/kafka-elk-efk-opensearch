@@ -10,11 +10,16 @@ resource "aws_kinesis_firehose_delivery_stream" "bronze" {
     # 버킷
     bucket_arn = aws_s3_bucket.data_lake.arn
     # 버퍼 크기 
+    buffering_size = var.firehose_buffer_size
     # 버퍼 인터벌
+    buffering_interval = var.firehose_buffer_interval
     # 압축 형태
-    # 프리픽스 
-    # 에러 프리픽스
-    # 로그 -> 클라우드 와치
+    compression_format = "GZIP"
+    # 프리픽스
+    prefix = "bronze/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"    
+    # 에러플릭
+    error_output_prefix = "firehose-error/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
+    # 로그->클라우드 와치
   }
 
   depends_on = [
