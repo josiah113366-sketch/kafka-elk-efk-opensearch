@@ -149,7 +149,7 @@ Step Functions
         S3 Silver / Gold
 ```
 
-# 인프라 구성
+# 인프라 구성 1 (브론즈 저장까지 수정)
 - 0. opensearch 제거
   - opensearch.tf 삭제
   - variables.tf에서 opensearch 관련 변수 삭제
@@ -161,7 +161,7 @@ Step Functions
 
 - 2. firehose에서 s3로 적재되게 조정 -> Data Lake 구성 완료
 
-- 3. 인프라 구성
+- 3. 인프라 구성 
 ```
   terraform -chdir=infra fmt
   terraform -chdir=infra validate
@@ -185,12 +185,17 @@ Step Functions
   python log_gen.py
 ```
 
+# 인프라 구성 2
 ```
 eventbridge.tf
 stepfunctions.tf
 glue.tf
 catalog.tf
 athena.tf
-iam-xxx.tf
+lambda.tf
+iam-stepfunctions.tf
+iam-glue.tf
+iam-lambda.tf
+sns.tf
 ...
 ```
