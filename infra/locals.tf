@@ -14,4 +14,7 @@ locals {
   # 테이블명
   silver_table_name = "silver_tbl"
   gold_table_name = "gold_tbl"
+
+  # glue
+  glue_job_name = "${var.project_name}-bronze-to-silver"
 }
