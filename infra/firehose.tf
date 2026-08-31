@@ -17,7 +17,7 @@ resource "aws_kinesis_firehose_delivery_stream" "bronze" {
     compression_format = "GZIP"
     # 프리픽스
     prefix = "bronze/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"    
-    # 에러플릭
+    # 에러 프리픽스
     error_output_prefix = "firehose-error/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
     # 로그->클라우드 와치
     cloudwatch_logging_options {
